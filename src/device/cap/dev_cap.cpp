@@ -1,10 +1,6 @@
 #include "dev_cap.hpp"
 
-#include <stdbool.h>
-#include <string.h>
-
 #include "comp_utils.hpp"
-#include "om.h"
 
 #define CAP_RES (100) /* 电容数据分辨率 */
 
@@ -12,8 +8,18 @@
   13.0f /* 电容截止电压，未接升压模块时要高于电调最低工作电压 */
 
 using namespace Device;
+/*
+ * Feedback info: can_cap => rx_callback => control_feedback => Update => _info => info_topic(cap_info)
+ * Output: can_out_topic => out_sub => out_ => Control
+ */
 
+/**
+ * 电容初始化函数
+ * @details 注册 Topic 和回调函数
+ * @param param 初始化参数
+ */
 Cap::Cap(Cap::Param &param) : param_(param), info_tp_("cap_info") {
+  /* 接受数据回调函数 */
   auto rx_callback = [](Can::Pack &rx, Cap *cap) {
     rx.index -= cap->param_.index;
 
@@ -29,6 +35,7 @@ Cap::Cap(Cap::Param &param) : param_(param), info_tp_("cap_info") {
 
   Can::Subscribe(cap_tp, this->param_.can, this->param_.index, 1);
 
+  /* 电容线程函数 */
   auto cap_thread = [](Cap *cap) {
     Message::Subscriber out_sub("cap_out", cap->out_);
 
@@ -52,22 +59,25 @@ Cap::Cap(Cap::Param &param) : param_(param), info_tp_("cap_info") {
                        System::Thread::Medium);
 }
 
+/**
+ * 从队列的数据包更新状态
+ * @return 一定时间长度内接收不到电容反馈值，使电容离线
+ */
 bool Cap::Update() {
   Can::Pack rx;
   while (this->control_feedback_.Receive(rx, 0)) {
     this->Decode(rx);
-    this->online_ = 1;
+    this->online_ = true;
     this->last_online_time_ = System::Thread::GetTick();
     return true;
   }
-
-  if (System::Thread::GetTick() - this->last_online_time_ > 250) {
-    return false;
-  } else {
-    return true;
-  }
+  return System::Thread::GetTick() - this->last_online_time_ <= 250;
 }
 
+/**
+ * 解析返回的数据
+ * @param rx 接收到原始数据包
+ */
 void Cap::Decode(Can::Pack &rx) {
   uint8_t *raw = rx.data;
   this->info_.input_volt_ = (float)((raw[1] << 8) | raw[0]) / (float)CAP_RES;
@@ -79,8 +89,12 @@ void Cap::Decode(Can::Pack &rx) {
   this->info_.percentage_ = this->GetPercentage();
 }
 
-bool Cap::Control() {
-  uint16_t pwr_lim = (uint16_t)(this->out_.power_limit_ * CAP_RES);
+/**
+ * 输出功率限制
+ * @return 是否成功
+ */
+bool Cap::Control() const {
+  auto pwr_lim = (uint16_t)(this->out_.power_limit_ * CAP_RES);
 
   Can::Pack tx_buff;
 
@@ -92,18 +106,29 @@ bool Cap::Control() {
   return Can::SendPack(this->param_.can, tx_buff);
 }
 
+/**
+ * @brief 电容离线时调用，作用为清空状态
+ * @return always true
+ */
 bool Cap::Offline() {
   this->info_.cap_volt_ = 0;
   this->info_.input_curr_ = 0;
   this->info_.input_volt_ = 0;
   this->info_.target_power_ = 0;
-  this->online_ = 0;
+  this->online_ = false;
 
   return true;
 }
 
-float Cap::GetPercentage() {
-  const float c_max = this->info_.input_volt_ * this->info_.input_volt_;
+/**
+ * @brief 获取电容当前能量的百分比
+ * @details 电容能量 E = 0.5 * C * U^2，U为电容两侧电压，最低电压为截止电压
+ * @return 返回表示电容当前能量的浮点数，范围在0到1之间
+ */
+float Cap::GetPercentage() const {
+  const float c_max =
+      this->info_.input_volt_ *
+      this->info_.input_volt_; /* 电容电压最大值不超过输入电压 */
   const float c_cap = this->info_.cap_volt_ * this->info_.cap_volt_;
   const float c_min = CAP_CUTOFF_VOLT * CAP_CUTOFF_VOLT;
   float percentage = (c_cap - c_min) / (c_max - c_min);

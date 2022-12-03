@@ -33,9 +33,21 @@ class Thread {
   typedef enum { IDLE, Low, Medium, High, Realtime } Priority;
 
   template <typename Fun, typename Arg>
+  /**
+   * 创建线程
+   * @see xTaskCreate
+   * @tparam Fun 线程入口函数的类型
+   * @tparam Arg 向线程入口函数传递的参数类型
+   * @param fn 指向线程入口函数的指针
+   * @param arg 线程入口函数的参数
+   * @param name 线程的名称
+   * @param stack_depth 栈深度
+   * @param priority 线程优先级
+   */
   void Create(Fun fn, Arg arg, const char* name, uint32_t stack_depth,
               Priority priority) {
     static_cast<void (*)(Arg)>(fn);
+    /* overload new operator by manual */
     HelperFunction<Arg>* helper_fn = static_cast<HelperFunction<Arg>*>(
         pvPortMalloc(sizeof(HelperFunction<Arg>)));
 
